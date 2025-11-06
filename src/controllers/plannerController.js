@@ -6,11 +6,14 @@ import { z } from "zod";
 // MULTER SETUP //
 export const upload = multer({ storage: multer.memoryStorage() });
 
-// ZOD SCHEMAS //
+// ZOD SCHEMAS
+
 const plannerOnboardSchema = z.object({
   userId: z.string().nonempty("userId is required"),
   companyName: z.string().nonempty("companyName is required"),
   businessAddress: z.string().nonempty("businessAddress is required"),
+  socialMediaLinks: z.string().optional(),
+  portfolioWebsite: z.string().url("Invalid URL").optional(),
   cacNumber: z.string().optional(),
 });
 
@@ -18,14 +21,24 @@ const plannerUpdateSchema = z.object({
   companyName: z.string().optional(),
   businessAddress: z.string().optional(),
   cacNumber: z.string().optional(),
+  socialMediaLinks: z.string().optional(),
+  portfolioWebsite: z.string().url("Invalid URL").optional(),
 });
 
-//  we onboarding planner //
+// ONBOARD PLANNER
+
 export const onboardPlanner = async (req, res, next) => {
   try {
     const parsed = plannerOnboardSchema.parse(req.body);
 
-    const { userId, companyName, businessAddress, cacNumber } = parsed;
+    const {
+      userId,
+      companyName,
+      businessAddress,
+      socialMediaLinks,
+      portfolioWebsite,
+      cacNumber,
+    } = parsed;
 
     const user = await prisma.user.findUnique({
       where: { id: parseInt(userId) },
@@ -34,18 +47,27 @@ export const onboardPlanner = async (req, res, next) => {
 
     const planner = await prisma.planner.upsert({
       where: { userId: parseInt(userId) },
-      update: { companyName, businessAddress, cacNumber: cacNumber || null },
+      update: {
+        companyName,
+        businessAddress,
+        cacNumber: cacNumber || null,
+        socialMediaLinks: socialMediaLinks || null,
+        portfolioWebsite: portfolioWebsite || null,
+      },
       create: {
         userId: parseInt(userId),
         companyName,
         businessAddress,
         cacNumber: cacNumber || null,
+        socialMediaLinks: socialMediaLinks || null,
+        portfolioWebsite: portfolioWebsite || null,
       },
     });
 
-    res
-      .status(200)
-      .json({ message: "Planner onboarded successfully", planner });
+    res.status(200).json({
+      message: "Planner onboarded successfully",
+      planner,
+    });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return next({
@@ -58,7 +80,8 @@ export const onboardPlanner = async (req, res, next) => {
   }
 };
 
-//  planner update //
+// UPDATE PLANNER
+
 export const updatePlanner = async (req, res, next) => {
   try {
     const parsed = plannerUpdateSchema.parse(req.body);
@@ -70,6 +93,8 @@ export const updatePlanner = async (req, res, next) => {
         companyName: parsed.companyName,
         businessAddress: parsed.businessAddress,
         cacNumber: parsed.cacNumber || null,
+        socialMediaLinks: parsed.socialMediaLinks || null,
+        portfolioWebsite: parsed.portfolioWebsite || null,
       },
     });
 
@@ -86,7 +111,8 @@ export const updatePlanner = async (req, res, next) => {
   }
 };
 
-// we getting planner //
+// GET PLANNER
+
 export const getPlanner = async (req, res, next) => {
   try {
     const planner = await prisma.planner.findUnique({
@@ -102,7 +128,8 @@ export const getPlanner = async (req, res, next) => {
   }
 };
 
-// TO  UPLOAD PROFILE PHOTO //
+// UPLOAD PROFILE PHOTO
+
 export const uploadProfilePhoto = async (req, res, next) => {
   try {
     const { id } = req.params;

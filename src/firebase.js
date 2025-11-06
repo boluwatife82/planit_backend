@@ -13,9 +13,9 @@ try {
   });
 
   bucket = admin.storage().bucket();
-  console.log("✅ Firebase initialized");
+  console.log("Firebase initialized");
 } catch (err) {
-  console.warn("⚠️ Firebase not initialized:", err.message);
+  console.warn("Firebase not initialized:", err.message);
 }
 
 export { bucket };
