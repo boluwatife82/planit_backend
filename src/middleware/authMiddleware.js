@@ -1,8 +1,7 @@
-// middleware/authMiddleware.js
 import jwt from "jsonwebtoken";
-import prisma from "../prismaClient.js";
+import { db } from "../firebase.js"; // ✅ FIREBASE - NOT PRISMA
 
-// ------------------- AUTHENTICATE JWT ------------------- //
+// AUTHENTICATE JWT - FIREBASE VERSION ✅
 export const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -13,12 +12,15 @@ export const authenticate = async (req, res, next) => {
     const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret");
 
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-    });
-    if (!user) return res.status(401).json({ error: "User not found" });
+    // ✅ FIREBASE: Get user from Firestore (no parseInt needed)
+    const userDoc = await db.collection("users").doc(decoded.userId).get();
 
-    req.user = user; // attach user to request for later use
+    if (!userDoc.exists) {
+      return res.status(401).json({ error: "User not found" });
+    }
+
+    // Attach user data to request (includes the document ID)
+    req.user = { id: userDoc.id, ...userDoc.data() };
     next();
   } catch (err) {
     console.error("Auth Error:", err);
@@ -26,7 +28,7 @@ export const authenticate = async (req, res, next) => {
   }
 };
 
-// ------------------- ROLE-BASED ACCESS CONTROL ------------------- //
+// ROLE-BASED ACCESS CONTROL - NO CHANGES NEEDED ✅
 export const authorizeRoles = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
@@ -36,9 +38,10 @@ export const authorizeRoles = (...roles) => {
   };
 };
 
-// ------------------- SELF OR ADMIN ------------------- //
+// SELF OR ADMIN - FIREBASE VERSION ✅
 export const selfOrAdmin = (req, res, next) => {
-  const requestedId = parseInt(req.params.id);
+  const requestedId = req.params.id; // ✅ No parseInt - Firebase uses string IDs
+
   if (req.user.id !== requestedId && req.user.role !== "ADMIN") {
     return res.status(403).json({ error: "Forbidden: Access denied" });
   }

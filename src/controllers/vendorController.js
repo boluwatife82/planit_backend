@@ -1,6 +1,5 @@
-import prisma from "../prismaClient.js";
+import { db, bucket } from "../firebase.js"; // ✅ FIREBASE - NOT PRISMA
 import multer from "multer";
-import { bucket } from "../firebase.js";
 import { z } from "zod";
 
 //  MULTER SETUP  //
@@ -26,7 +25,7 @@ const updateVendorSchema = z.object({
   phone: z.string().optional(),
 });
 
-//   ONBOARD VENDOR    //
+//   ONBOARD VENDOR - FIREBASE VERSION ✅
 export const onboardVendor = async (req, res, next) => {
   try {
     const parsed = onboardVendorSchema.parse(req.body);
@@ -41,63 +40,88 @@ export const onboardVendor = async (req, res, next) => {
       phone,
     } = parsed;
 
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(userId) },
-    });
-    if (!user) throw { statusCode: 404, message: "User not found" };
+    // ✅ FIREBASE: Check if user exists
+    const userDoc = await db.collection("users").doc(userId).get();
+    if (!userDoc.exists) {
+      throw { statusCode: 404, message: "User not found" };
+    }
 
     const exp = yearsOfExperience ? parseInt(yearsOfExperience) : null;
 
-    const vendor = await prisma.vendor.upsert({
-      where: { userId: parseInt(userId) },
-      update: {
-        companyName,
-        businessAddress,
-        cacNumber: cacNumber || null,
-        serviceCategories: serviceCategories || null,
-        yearsOfExperience: exp,
-        phone: phone || null,
-      },
-      create: {
-        userId: parseInt(userId),
-        companyName,
-        businessAddress,
-        cacNumber: cacNumber || null,
-        serviceCategories: serviceCategories || null,
-        yearsOfExperience: exp,
-        phone: phone || null,
-      },
-    });
+    const vendorData = {
+      userId,
+      companyName,
+      businessAddress,
+      cacNumber: cacNumber || null,
+      serviceCategories: serviceCategories || null,
+      yearsOfExperience: exp,
+      phone: phone || null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // ✅ FIREBASE: Check if vendor exists by querying userId
+    const vendorQuery = await db
+      .collection("vendors")
+      .where("userId", "==", userId)
+      .get();
+
+    let vendorId;
+    let vendor;
+
+    if (vendorQuery.empty) {
+      // Create new vendor
+      vendorData.createdAt = new Date().toISOString();
+      const vendorRef = await db.collection("vendors").add(vendorData);
+      vendorId = vendorRef.id;
+      vendor = { id: vendorId, ...vendorData };
+    } else {
+      // Update existing vendor
+      vendorId = vendorQuery.docs[0].id;
+      await db.collection("vendors").doc(vendorId).update(vendorData);
+      const updatedDoc = await db.collection("vendors").doc(vendorId).get();
+      vendor = { id: vendorId, ...updatedDoc.data() };
+    }
 
     res.status(200).json({ message: "Vendor onboarded successfully", vendor });
   } catch (err) {
-    if (err instanceof z.ZodError)
+    if (err instanceof z.ZodError) {
       return next({
         statusCode: 400,
         message: "Validation error",
         details: err.errors,
       });
+    }
     next(err);
   }
 };
 
-//  GET VENDOR -   //
+//  GET VENDOR - FIREBASE VERSION ✅
 export const getVendor = async (req, res, next) => {
   try {
-    const vendor = await prisma.vendor.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: { user: true },
-    });
+    // ✅ FIREBASE: Get vendor document (no parseInt needed)
+    const vendorDoc = await db.collection("vendors").doc(req.params.id).get();
 
-    if (!vendor) throw { statusCode: 404, message: "Vendor not found" };
+    if (!vendorDoc.exists) {
+      throw { statusCode: 404, message: "Vendor not found" };
+    }
 
-    res.status(200).json(vendor);
+    const vendorData = { id: vendorDoc.id, ...vendorDoc.data() };
+
+    // ✅ FIREBASE: Manually get associated user data
+    if (vendorData.userId) {
+      const userDoc = await db.collection("users").doc(vendorData.userId).get();
+      if (userDoc.exists) {
+        vendorData.user = { id: userDoc.id, ...userDoc.data() };
+      }
+    }
+
+    res.status(200).json(vendorData);
   } catch (err) {
     next(err);
   }
 };
 
-//   UPDATE VENDOR   //
+//   UPDATE VENDOR - FIREBASE VERSION ✅
 export const updateVendor = async (req, res, next) => {
   try {
     const parsed = updateVendorSchema.parse(req.body);
@@ -111,40 +135,60 @@ export const updateVendor = async (req, res, next) => {
       phone,
     } = parsed;
 
+    // ✅ FIREBASE: Check if vendor exists
+    const vendorDoc = await db.collection("vendors").doc(id).get();
+    if (!vendorDoc.exists) {
+      throw { statusCode: 404, message: "Vendor not found" };
+    }
+
     const exp = yearsOfExperience ? parseInt(yearsOfExperience) : null;
-    const updateData = {};
+    const updateData = {
+      updatedAt: new Date().toISOString(),
+    };
+
     if (companyName) updateData.companyName = companyName;
     if (businessAddress) updateData.businessAddress = businessAddress;
-    if (cacNumber) updateData.cacNumber = cacNumber;
-    if (serviceCategories) updateData.serviceCategories = serviceCategories;
-    if (yearsOfExperience) updateData.yearsOfExperience = exp;
-    if (phone) updateData.phone = phone;
+    if (cacNumber !== undefined) updateData.cacNumber = cacNumber || null;
+    if (serviceCategories !== undefined)
+      updateData.serviceCategories = serviceCategories || null;
+    if (yearsOfExperience !== undefined) updateData.yearsOfExperience = exp;
+    if (phone !== undefined) updateData.phone = phone || null;
 
-    if (Object.keys(updateData).length === 0)
+    if (Object.keys(updateData).length === 1) {
+      // Only updatedAt
       throw { statusCode: 400, message: "No valid fields to update" };
+    }
 
-    const vendor = await prisma.vendor.update({
-      where: { id: parseInt(id) },
-      data: updateData,
-    });
+    // ✅ FIREBASE: Update vendor document
+    await db.collection("vendors").doc(id).update(updateData);
+
+    const updatedDoc = await db.collection("vendors").doc(id).get();
+    const vendor = { id: updatedDoc.id, ...updatedDoc.data() };
 
     res.status(200).json({ message: "Vendor profile updated", vendor });
   } catch (err) {
-    if (err instanceof z.ZodError)
+    if (err instanceof z.ZodError) {
       return next({
         statusCode: 400,
         message: "Validation error",
         details: err.errors,
       });
+    }
     next(err);
   }
 };
 
-//   UPLOAD LICENSE    //
+//   UPLOAD LICENSE - FIREBASE VERSION ✅
 export const uploadLicense = async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!req.file) throw { statusCode: 400, message: "No file uploaded" };
+
+    // ✅ FIREBASE: Check if vendor exists
+    const vendorDoc = await db.collection("vendors").doc(id).get();
+    if (!vendorDoc.exists) {
+      throw { statusCode: 404, message: "Vendor not found" };
+    }
 
     let fileUrl;
 
@@ -164,10 +208,14 @@ export const uploadLicense = async (req, res, next) => {
         await file.makePublic();
         fileUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
 
-        const vendor = await prisma.vendor.update({
-          where: { id: parseInt(id) },
-          data: { licenseUrl: fileUrl },
+        // ✅ FIREBASE: Update vendor with license URL
+        await db.collection("vendors").doc(id).update({
+          licenseUrl: fileUrl,
+          updatedAt: new Date().toISOString(),
         });
+
+        const updatedDoc = await db.collection("vendors").doc(id).get();
+        const vendor = { id: updatedDoc.id, ...updatedDoc.data() };
 
         res
           .status(200)
@@ -177,10 +225,15 @@ export const uploadLicense = async (req, res, next) => {
       stream.end(req.file.buffer);
     } else {
       fileUrl = `https://mock-storage.com/vendors/${req.file.originalname}`;
-      const vendor = await prisma.vendor.update({
-        where: { id: parseInt(id) },
-        data: { licenseUrl: fileUrl },
+
+      // ✅ FIREBASE: Update vendor with mock URL
+      await db.collection("vendors").doc(id).update({
+        licenseUrl: fileUrl,
+        updatedAt: new Date().toISOString(),
       });
+
+      const updatedDoc = await db.collection("vendors").doc(id).get();
+      const vendor = { id: updatedDoc.id, ...updatedDoc.data() };
 
       res.status(200).json({
         message: "Mock license upload (Firebase inactive)",

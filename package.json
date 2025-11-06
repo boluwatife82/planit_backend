@@ -10,10 +10,8 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Planit Backend API with Firebase",
   "dependencies": {
-    "@prisma/client": "^6.18.0",
-    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
@@ -22,5 +20,8 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
   }
 }

@@ -1,13 +1,11 @@
-import prisma from "../prismaClient.js";
+import { db, bucket } from "../firebase.js";
 import multer from "multer";
-import { bucket } from "../firebase.js";
 import { z } from "zod";
 
 // MULTER SETUP //
 export const upload = multer({ storage: multer.memoryStorage() });
 
 // ZOD SCHEMAS
-
 const plannerOnboardSchema = z.object({
   userId: z.string().nonempty("userId is required"),
   companyName: z.string().nonempty("companyName is required"),
@@ -26,7 +24,6 @@ const plannerUpdateSchema = z.object({
 });
 
 // ONBOARD PLANNER
-
 export const onboardPlanner = async (req, res, next) => {
   try {
     const parsed = plannerOnboardSchema.parse(req.body);
@@ -40,29 +37,45 @@ export const onboardPlanner = async (req, res, next) => {
       cacNumber,
     } = parsed;
 
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(userId) },
-    });
-    if (!user) throw { statusCode: 404, message: "User not found" };
+    // Check if user exists
+    const userDoc = await db.collection("users").doc(userId).get();
+    if (!userDoc.exists) {
+      throw { statusCode: 404, message: "User not found" };
+    }
 
-    const planner = await prisma.planner.upsert({
-      where: { userId: parseInt(userId) },
-      update: {
-        companyName,
-        businessAddress,
-        cacNumber: cacNumber || null,
-        socialMediaLinks: socialMediaLinks || null,
-        portfolioWebsite: portfolioWebsite || null,
-      },
-      create: {
-        userId: parseInt(userId),
-        companyName,
-        businessAddress,
-        cacNumber: cacNumber || null,
-        socialMediaLinks: socialMediaLinks || null,
-        portfolioWebsite: portfolioWebsite || null,
-      },
-    });
+    // Create/update planner document
+    const plannerData = {
+      userId,
+      companyName,
+      businessAddress,
+      cacNumber: cacNumber || null,
+      socialMediaLinks: socialMediaLinks || null,
+      portfolioWebsite: portfolioWebsite || null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Check if planner exists by querying userId
+    const plannerQuery = await db
+      .collection("planners")
+      .where("userId", "==", userId)
+      .get();
+
+    let plannerId;
+    let planner;
+
+    if (plannerQuery.empty) {
+      // Create new planner
+      plannerData.createdAt = new Date().toISOString();
+      const plannerRef = await db.collection("planners").add(plannerData);
+      plannerId = plannerRef.id;
+      planner = { id: plannerId, ...plannerData };
+    } else {
+      // Update existing planner
+      plannerId = plannerQuery.docs[0].id;
+      await db.collection("planners").doc(plannerId).update(plannerData);
+      const updatedDoc = await db.collection("planners").doc(plannerId).get();
+      planner = { id: plannerId, ...updatedDoc.data() };
+    }
 
     res.status(200).json({
       message: "Planner onboarded successfully",
@@ -81,22 +94,35 @@ export const onboardPlanner = async (req, res, next) => {
 };
 
 // UPDATE PLANNER
-
 export const updatePlanner = async (req, res, next) => {
   try {
     const parsed = plannerUpdateSchema.parse(req.body);
     const { id } = req.params;
 
-    const planner = await prisma.planner.update({
-      where: { id: parseInt(id) },
-      data: {
-        companyName: parsed.companyName,
-        businessAddress: parsed.businessAddress,
-        cacNumber: parsed.cacNumber || null,
-        socialMediaLinks: parsed.socialMediaLinks || null,
-        portfolioWebsite: parsed.portfolioWebsite || null,
-      },
-    });
+    // Check if planner exists
+    const plannerDoc = await db.collection("planners").doc(id).get();
+    if (!plannerDoc.exists) {
+      throw { statusCode: 404, message: "Planner not found" };
+    }
+
+    const updateData = {
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (parsed.companyName) updateData.companyName = parsed.companyName;
+    if (parsed.businessAddress)
+      updateData.businessAddress = parsed.businessAddress;
+    if (parsed.cacNumber !== undefined)
+      updateData.cacNumber = parsed.cacNumber || null;
+    if (parsed.socialMediaLinks !== undefined)
+      updateData.socialMediaLinks = parsed.socialMediaLinks || null;
+    if (parsed.portfolioWebsite !== undefined)
+      updateData.portfolioWebsite = parsed.portfolioWebsite || null;
+
+    await db.collection("planners").doc(id).update(updateData);
+
+    const updatedDoc = await db.collection("planners").doc(id).get();
+    const planner = { id: updatedDoc.id, ...updatedDoc.data() };
 
     res.status(200).json({ message: "Planner profile updated", planner });
   } catch (err) {
@@ -112,28 +138,44 @@ export const updatePlanner = async (req, res, next) => {
 };
 
 // GET PLANNER
-
 export const getPlanner = async (req, res, next) => {
   try {
-    const planner = await prisma.planner.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: { user: true },
-    });
+    const plannerDoc = await db.collection("planners").doc(req.params.id).get();
 
-    if (!planner) throw { statusCode: 404, message: "Planner not found" };
+    if (!plannerDoc.exists) {
+      throw { statusCode: 404, message: "Planner not found" };
+    }
 
-    res.status(200).json(planner);
+    const plannerData = { id: plannerDoc.id, ...plannerDoc.data() };
+
+    // Get associated user data
+    if (plannerData.userId) {
+      const userDoc = await db
+        .collection("users")
+        .doc(plannerData.userId)
+        .get();
+      if (userDoc.exists) {
+        plannerData.user = { id: userDoc.id, ...userDoc.data() };
+      }
+    }
+
+    res.status(200).json(plannerData);
   } catch (err) {
     next(err);
   }
 };
 
 // UPLOAD PROFILE PHOTO
-
 export const uploadProfilePhoto = async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!req.file) throw { statusCode: 400, message: "No file uploaded" };
+
+    // Check if planner exists
+    const plannerDoc = await db.collection("planners").doc(id).get();
+    if (!plannerDoc.exists) {
+      throw { statusCode: 404, message: "Planner not found" };
+    }
 
     let fileUrl;
 
@@ -151,10 +193,13 @@ export const uploadProfilePhoto = async (req, res, next) => {
         await file.makePublic();
         fileUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
 
-        const planner = await prisma.planner.update({
-          where: { id: parseInt(id) },
-          data: { profilePhoto: fileUrl },
+        await db.collection("planners").doc(id).update({
+          profilePhoto: fileUrl,
+          updatedAt: new Date().toISOString(),
         });
+
+        const updatedDoc = await db.collection("planners").doc(id).get();
+        const planner = { id: updatedDoc.id, ...updatedDoc.data() };
 
         res
           .status(200)
@@ -165,10 +210,13 @@ export const uploadProfilePhoto = async (req, res, next) => {
     } else {
       fileUrl = `https://mock-storage.com/planners/${req.file.originalname}`;
 
-      const planner = await prisma.planner.update({
-        where: { id: parseInt(id) },
-        data: { profilePhoto: fileUrl },
+      await db.collection("planners").doc(id).update({
+        profilePhoto: fileUrl,
+        updatedAt: new Date().toISOString(),
       });
+
+      const updatedDoc = await db.collection("planners").doc(id).get();
+      const planner = { id: updatedDoc.id, ...updatedDoc.data() };
 
       res
         .status(200)
