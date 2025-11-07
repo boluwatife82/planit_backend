@@ -1,9 +1,12 @@
-import { db, bucket } from "../firebase.js"; // ✅ FIREBASE - NOT PRISMA
+import { db, bucket } from "../firebase.js";
 import multer from "multer";
 import { z } from "zod";
 
 //  MULTER SETUP  //
-export const upload = multer({ storage: multer.memoryStorage() });
+export const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit for licenses
+});
 
 //  ZOD SCHEMAS  //
 const onboardVendorSchema = z.object({
@@ -25,7 +28,7 @@ const updateVendorSchema = z.object({
   phone: z.string().optional(),
 });
 
-//   ONBOARD VENDOR - FIREBASE VERSION ✅
+//   ONBOARD VENDOR
 export const onboardVendor = async (req, res, next) => {
   try {
     const parsed = onboardVendorSchema.parse(req.body);
@@ -40,7 +43,7 @@ export const onboardVendor = async (req, res, next) => {
       phone,
     } = parsed;
 
-    // ✅ FIREBASE: Check if user exists
+    // Check if user exists
     const userDoc = await db.collection("users").doc(userId).get();
     if (!userDoc.exists) {
       throw { statusCode: 404, message: "User not found" };
@@ -59,7 +62,7 @@ export const onboardVendor = async (req, res, next) => {
       updatedAt: new Date().toISOString(),
     };
 
-    // ✅ FIREBASE: Check if vendor exists by querying userId
+    // Check if vendor exists by querying userId
     const vendorQuery = await db
       .collection("vendors")
       .where("userId", "==", userId)
@@ -95,10 +98,9 @@ export const onboardVendor = async (req, res, next) => {
   }
 };
 
-//  GET VENDOR - FIREBASE VERSION ✅
+//  GET VENDOR
 export const getVendor = async (req, res, next) => {
   try {
-    // ✅ FIREBASE: Get vendor document (no parseInt needed)
     const vendorDoc = await db.collection("vendors").doc(req.params.id).get();
 
     if (!vendorDoc.exists) {
@@ -107,11 +109,12 @@ export const getVendor = async (req, res, next) => {
 
     const vendorData = { id: vendorDoc.id, ...vendorDoc.data() };
 
-    // ✅ FIREBASE: Manually get associated user data
+    // Get associated user data
     if (vendorData.userId) {
       const userDoc = await db.collection("users").doc(vendorData.userId).get();
       if (userDoc.exists) {
-        vendorData.user = { id: userDoc.id, ...userDoc.data() };
+        const { password, ...userWithoutPassword } = userDoc.data();
+        vendorData.user = { id: userDoc.id, ...userWithoutPassword };
       }
     }
 
@@ -121,7 +124,7 @@ export const getVendor = async (req, res, next) => {
   }
 };
 
-//   UPDATE VENDOR - FIREBASE VERSION ✅
+//   UPDATE VENDOR
 export const updateVendor = async (req, res, next) => {
   try {
     const parsed = updateVendorSchema.parse(req.body);
@@ -135,7 +138,7 @@ export const updateVendor = async (req, res, next) => {
       phone,
     } = parsed;
 
-    // ✅ FIREBASE: Check if vendor exists
+    // Check if vendor exists
     const vendorDoc = await db.collection("vendors").doc(id).get();
     if (!vendorDoc.exists) {
       throw { statusCode: 404, message: "Vendor not found" };
@@ -159,7 +162,7 @@ export const updateVendor = async (req, res, next) => {
       throw { statusCode: 400, message: "No valid fields to update" };
     }
 
-    // ✅ FIREBASE: Update vendor document
+    // Update vendor document
     await db.collection("vendors").doc(id).update(updateData);
 
     const updatedDoc = await db.collection("vendors").doc(id).get();
@@ -178,13 +181,31 @@ export const updateVendor = async (req, res, next) => {
   }
 };
 
-//   UPLOAD LICENSE - FIREBASE VERSION ✅
+//   UPLOAD LICENSE - FIXED VERSION
 export const uploadLicense = async (req, res, next) => {
   try {
     const { id } = req.params;
-    if (!req.file) throw { statusCode: 400, message: "No file uploaded" };
 
-    // ✅ FIREBASE: Check if vendor exists
+    if (!req.file) {
+      throw { statusCode: 400, message: "No file uploaded" };
+    }
+
+    // Validate file type (allow PDFs and images for licenses)
+    const allowedMimeTypes = [
+      "application/pdf",
+      "image/jpeg",
+      "image/png",
+      "image/jpg",
+    ];
+    if (!allowedMimeTypes.includes(req.file.mimetype)) {
+      throw {
+        statusCode: 400,
+        message:
+          "Invalid file type. Only PDF, JPEG, and PNG are allowed for licenses",
+      };
+    }
+
+    // Check if vendor exists
     const vendorDoc = await db.collection("vendors").doc(id).get();
     if (!vendorDoc.exists) {
       throw { statusCode: 404, message: "Vendor not found" };
@@ -193,42 +214,64 @@ export const uploadLicense = async (req, res, next) => {
     let fileUrl;
 
     if (bucket) {
-      const fileName = `vendors/licenses/${Date.now()}-${
-        req.file.originalname
-      }`;
+      // Generate unique filename
+      const timestamp = Date.now();
+      const fileExtension = req.file.originalname.split(".").pop();
+      const fileName = `vendors/${id}/licenses/${timestamp}.${fileExtension}`;
       const file = bucket.file(fileName);
 
-      const stream = file.createWriteStream({
-        metadata: { contentType: req.file.mimetype },
-      });
-
-      stream.on("error", (err) => next(err));
-
-      stream.on("finish", async () => {
-        await file.makePublic();
-        fileUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
-
-        // ✅ FIREBASE: Update vendor with license URL
-        await db.collection("vendors").doc(id).update({
-          licenseUrl: fileUrl,
-          updatedAt: new Date().toISOString(),
+      // Upload file using Promise to avoid race conditions
+      await new Promise((resolve, reject) => {
+        const stream = file.createWriteStream({
+          metadata: {
+            contentType: req.file.mimetype,
+            metadata: {
+              firebaseStorageDownloadTokens: timestamp,
+            },
+          },
+          resumable: false,
         });
 
-        const updatedDoc = await db.collection("vendors").doc(id).get();
-        const vendor = { id: updatedDoc.id, ...updatedDoc.data() };
+        stream.on("error", (err) => {
+          console.error("License upload error:", err);
+          reject(err);
+        });
 
-        res
-          .status(200)
-          .json({ message: "License uploaded successfully", fileUrl, vendor });
+        stream.on("finish", () => {
+          resolve();
+        });
+
+        stream.end(req.file.buffer);
       });
 
-      stream.end(req.file.buffer);
-    } else {
-      fileUrl = `https://mock-storage.com/vendors/${req.file.originalname}`;
+      // Make file public
+      await file.makePublic();
 
-      // ✅ FIREBASE: Update vendor with mock URL
+      // Get public URL
+      fileUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+
+      // Update vendor with license URL
       await db.collection("vendors").doc(id).update({
         licenseUrl: fileUrl,
+        licenseUploadedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      const updatedDoc = await db.collection("vendors").doc(id).get();
+      const vendor = { id: updatedDoc.id, ...updatedDoc.data() };
+
+      res.status(200).json({
+        message: "License uploaded successfully",
+        fileUrl,
+        vendor,
+      });
+    } else {
+      // Mock upload for development
+      fileUrl = `https://mock-storage.com/vendors/licenses/${req.file.originalname}`;
+
+      await db.collection("vendors").doc(id).update({
+        licenseUrl: fileUrl,
+        licenseUploadedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
 
@@ -242,6 +285,7 @@ export const uploadLicense = async (req, res, next) => {
       });
     }
   } catch (err) {
+    console.error("License upload error:", err);
     next(err);
   }
 };

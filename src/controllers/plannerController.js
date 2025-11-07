@@ -3,7 +3,10 @@ import multer from "multer";
 import { z } from "zod";
 
 // MULTER SETUP //
-export const upload = multer({ storage: multer.memoryStorage() });
+export const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+});
 
 // ZOD SCHEMAS
 const plannerOnboardSchema = z.object({
@@ -11,7 +14,7 @@ const plannerOnboardSchema = z.object({
   companyName: z.string().nonempty("companyName is required"),
   businessAddress: z.string().nonempty("businessAddress is required"),
   socialMediaLinks: z.string().optional(),
-  portfolioWebsite: z.string().url("Invalid URL").optional(),
+  portfolioWebsite: z.string().url("Invalid URL").optional().or(z.literal("")),
   cacNumber: z.string().optional(),
 });
 
@@ -20,7 +23,7 @@ const plannerUpdateSchema = z.object({
   businessAddress: z.string().optional(),
   cacNumber: z.string().optional(),
   socialMediaLinks: z.string().optional(),
-  portfolioWebsite: z.string().url("Invalid URL").optional(),
+  portfolioWebsite: z.string().url("Invalid URL").optional().or(z.literal("")),
 });
 
 // ONBOARD PLANNER
@@ -155,7 +158,8 @@ export const getPlanner = async (req, res, next) => {
         .doc(plannerData.userId)
         .get();
       if (userDoc.exists) {
-        plannerData.user = { id: userDoc.id, ...userDoc.data() };
+        const { password, ...userWithoutPassword } = userDoc.data();
+        plannerData.user = { id: userDoc.id, ...userWithoutPassword };
       }
     }
 
@@ -165,11 +169,28 @@ export const getPlanner = async (req, res, next) => {
   }
 };
 
-// UPLOAD PROFILE PHOTO
+// UPLOAD PROFILE PHOTO - FIXED VERSION
 export const uploadProfilePhoto = async (req, res, next) => {
   try {
     const { id } = req.params;
-    if (!req.file) throw { statusCode: 400, message: "No file uploaded" };
+
+    if (!req.file) {
+      throw { statusCode: 400, message: "No file uploaded" };
+    }
+
+    // Validate file type
+    const allowedMimeTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/jpg",
+      "image/webp",
+    ];
+    if (!allowedMimeTypes.includes(req.file.mimetype)) {
+      throw {
+        statusCode: 400,
+        message: "Invalid file type. Only JPEG, PNG, and WebP are allowed",
+      };
+    }
 
     // Check if planner exists
     const plannerDoc = await db.collection("planners").doc(id).get();
@@ -180,34 +201,58 @@ export const uploadProfilePhoto = async (req, res, next) => {
     let fileUrl;
 
     if (bucket) {
-      const fileName = `planners/${Date.now()}-${req.file.originalname}`;
+      // Generate unique filename
+      const timestamp = Date.now();
+      const fileExtension = req.file.originalname.split(".").pop();
+      const fileName = `planners/${id}/${timestamp}.${fileExtension}`;
       const file = bucket.file(fileName);
 
-      const stream = file.createWriteStream({
-        metadata: { contentType: req.file.mimetype },
-      });
-
-      stream.on("error", (err) => next(err));
-
-      stream.on("finish", async () => {
-        await file.makePublic();
-        fileUrl = `https://storage.googleapis.com/${bucket.name}/${file.name}`;
-
-        await db.collection("planners").doc(id).update({
-          profilePhoto: fileUrl,
-          updatedAt: new Date().toISOString(),
+      // Upload file using Promise to avoid race conditions
+      await new Promise((resolve, reject) => {
+        const stream = file.createWriteStream({
+          metadata: {
+            contentType: req.file.mimetype,
+            metadata: {
+              firebaseStorageDownloadTokens: timestamp, // For public access
+            },
+          },
+          resumable: false, // Faster for small files
         });
 
-        const updatedDoc = await db.collection("planners").doc(id).get();
-        const planner = { id: updatedDoc.id, ...updatedDoc.data() };
+        stream.on("error", (err) => {
+          console.error("Upload error:", err);
+          reject(err);
+        });
 
-        res
-          .status(200)
-          .json({ message: "Profile photo uploaded", fileUrl, planner });
+        stream.on("finish", () => {
+          resolve();
+        });
+
+        stream.end(req.file.buffer);
       });
 
-      stream.end(req.file.buffer);
+      // Make file public
+      await file.makePublic();
+
+      // Get public URL
+      fileUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+
+      // Update planner document
+      await db.collection("planners").doc(id).update({
+        profilePhoto: fileUrl,
+        updatedAt: new Date().toISOString(),
+      });
+
+      const updatedDoc = await db.collection("planners").doc(id).get();
+      const planner = { id: updatedDoc.id, ...updatedDoc.data() };
+
+      res.status(200).json({
+        message: "Profile photo uploaded successfully",
+        fileUrl,
+        planner,
+      });
     } else {
+      // Mock upload for development/testing
       fileUrl = `https://mock-storage.com/planners/${req.file.originalname}`;
 
       await db.collection("planners").doc(id).update({
@@ -218,11 +263,14 @@ export const uploadProfilePhoto = async (req, res, next) => {
       const updatedDoc = await db.collection("planners").doc(id).get();
       const planner = { id: updatedDoc.id, ...updatedDoc.data() };
 
-      res
-        .status(200)
-        .json({ message: "Mock upload (Firebase inactive)", fileUrl, planner });
+      res.status(200).json({
+        message: "Mock upload (Firebase inactive)",
+        fileUrl,
+        planner,
+      });
     }
   } catch (err) {
+    console.error("Upload error:", err);
     next(err);
   }
 };
