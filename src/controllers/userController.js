@@ -7,6 +7,7 @@ import { z } from "zod";
 const signupSchema = z.object({
   firstName: z.string().min(1, "First name is required"),
   lastName: z.string().min(1, "Last name is required"),
+  gender: z.string().optional(), // Added gender field
   email: z.string().email("Invalid email address"),
   phone: z.string().optional(),
   password: z.string().min(6, "Password must be at least 6 characters"),
@@ -21,6 +22,7 @@ const loginSchema = z.object({
 const updateSchema = z.object({
   firstName: z.string().optional(),
   lastName: z.string().optional(),
+  gender: z.string().optional(), // Added gender field
   phone: z.string().optional(),
   password: z.string().min(6).optional(),
 });
@@ -30,7 +32,8 @@ export const signupUser = async (req, res, next) => {
   try {
     const parsed = signupSchema.parse(req.body);
 
-    const { firstName, lastName, email, phone, password, role } = parsed;
+    const { firstName, lastName, gender, email, phone, password, role } =
+      parsed;
 
     // ✅ FIREBASE: Check if user exists by querying email
     const existingUserQuery = await db
@@ -48,6 +51,7 @@ export const signupUser = async (req, res, next) => {
     const userData = {
       firstName,
       lastName,
+      gender: gender || null,
       email,
       phone: phone || null,
       password: hashedPassword,
@@ -100,19 +104,13 @@ export const loginUser = async (req, res, next) => {
       throw { statusCode: 401, message: "Invalid credentials" };
     }
 
-    // Make sure JWT_SECRET exists
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      throw new Error("JWT_SECRET is not defined in your .env file");
-    }
-
-    // When logging in a user
-    const token = jwt.sign({ userId: user.id, role: user.role }, jwtSecret, {
-      expiresIn: "7d",
-    });
+    const token = jwt.sign(
+      { userId: user.id, role: user.role },
+      process.env.JWT_SECRET || "secret",
+      { expiresIn: "7d" }
+    );
 
     const { password: _, ...userWithoutPassword } = user;
-
     res.status(200).json({
       message: "Login successful",
       user: userWithoutPassword,
@@ -183,7 +181,7 @@ export const updateUserProfile = async (req, res, next) => {
     }
 
     const parsed = updateSchema.parse(req.body);
-    const { firstName, lastName, phone, password } = parsed;
+    const { firstName, lastName, gender, phone, password } = parsed;
 
     const updateData = {
       updatedAt: new Date().toISOString(),
@@ -191,6 +189,7 @@ export const updateUserProfile = async (req, res, next) => {
 
     if (firstName) updateData.firstName = firstName;
     if (lastName) updateData.lastName = lastName;
+    if (gender) updateData.gender = gender;
     if (phone) updateData.phone = phone;
     if (password) updateData.password = await bcrypt.hash(password, 10);
 
